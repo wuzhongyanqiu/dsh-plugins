@@ -1,4 +1,4 @@
-// Standalone smoke test for the host half of dsh-ai-quota.
+// Standalone smoke test for the host half of the personal DSH plugin bundle.
 // Uses a real cordis Context with a fake `tools` service; no credentials,
 // no keys in env, no real codex on PATH.
 import { Context, Service } from "@deepseek-ai/cordis";
@@ -20,6 +20,7 @@ ctx.plugin(FakeTools);
 await ctx.plugin(AiQuotaGateway, {
   timeoutMs: 3000,
   deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
+  kimiApiKeyEnv: "KIMI_API_KEY",
   opencodeGoApiKeyEnv: "OPENCODE_GO_API_KEY",
   codexCli: "codex",
 });

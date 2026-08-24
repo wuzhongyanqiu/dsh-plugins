@@ -1,4 +1,4 @@
-// Host half of the dsh-ai-quota plugin.
+// Host half of the @wuzhongyanqiu/dsh-plugins quota feature.
 //
 // Two faces of one capability:
 //   1. A model tool `query_ai_quota` (registered via the host `tools`
@@ -11,16 +11,16 @@
 // Providers:
 //   - Codex      : local `codex app-server --stdio` JSON-RPC (NDJSON),
 //                  account/rateLimits/read -> rolling windows (5h / 7d).
-//   - Kimi       : GET {kimiBaseUrl}/usages with the Kimi Code CLI's OAuth
-//                  login state (~/.kimi-code/credentials), refreshing the
-//                  access token via {kimiOauthHost}/api/oauth/token when
-//                  expired; 5h / weekly quota windows.
+//   - Kimi       : GET {kimiBaseUrl}/usages with an API key from the configured
+//                  environment/DSH credential reference, falling back to the
+//                  Kimi Code CLI OAuth login state and refresh flow.
 //   - DeepSeek   : GET {deepseekBaseUrl}/user/balance with a Bearer key.
 //   - OpenCode Go: GET {opencodeBaseUrl} (https://opencode.ai/zen/go/v1/usage)
 //                  with a Bearer key; rolling / weekly / monthly windows.
 //
 // API keys are read from environment variables whose NAMES are configurable
-// through the plugin row config (deepseekApiKeyEnv / opencodeGoApiKeyEnv),
+// through the plugin row config (deepseekApiKeyEnv / kimiApiKeyEnv /
+// opencodeGoApiKeyEnv),
 // with a fallback to the DSH credentials seam for the same names. Keys are
 // never included in tool output, Remote results, or logs.
 
@@ -53,6 +53,7 @@ export const Config = z.object({
   opencodeBaseUrl: z.string().default(DEFAULT_OPENCODE_BASE_URL),
   codexCli: z.string().default(DEFAULT_CODEX_CLI),
   deepseekApiKeyEnv: z.string().default("DEEPSEEK_API_KEY"),
+  kimiApiKeyEnv: z.string().default("KIMI_API_KEY"),
   opencodeGoApiKeyEnv: z.string().default("OPENCODE_GO_API_KEY"),
   kimiBaseUrl: z.string().default(DEFAULT_KIMI_BASE_URL),
   kimiOauthHost: z.string().default(DEFAULT_KIMI_OAUTH_HOST),
@@ -348,7 +349,11 @@ export function codexRateLimits(codexCli, timeoutMs) {
     (async () => {
       try {
         const init = await call("initialize", 1, {
-          clientInfo: { name: "dsh-ai-quota", title: "dsh-ai-quota", version: "0.1.0" },
+          clientInfo: {
+            name: "wuzhongyanqiu-dsh-plugins",
+            title: "Wuzhongyanqiu DSH Plugins",
+            version: "0.1.0",
+          },
           capabilities: { experimentalApi: true },
         });
         if (!init || init.error || !init.result) {
@@ -689,6 +694,32 @@ function kimiPlanName(body) {
 }
 
 export async function queryKimi(ctx, config, timeoutMs) {
+  const apiKey = await resolveKey(ctx, config.kimiApiKeyEnv || "KIMI_API_KEY");
+  if (apiKey) {
+    try {
+      const r = await fetchJson(
+        `${String(config.kimiBaseUrl || DEFAULT_KIMI_BASE_URL).replace(/\/+$/, "")}/usages`,
+        { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
+        timeoutMs,
+      );
+      if (r.status === 401 || r.status === 403) {
+        return { status: "error", keyConfigured: true, error: "unauthorized", plan: null, windows: [] };
+      }
+      if (!r.ok) {
+        return { status: "error", keyConfigured: true, error: r.status ? `http-${r.status}` : "too-large", plan: null, windows: [] };
+      }
+      return {
+        status: "ok",
+        keyConfigured: true,
+        error: null,
+        plan: safeLabel(kimiPlanName(r.body)),
+        windows: adaptKimiUsage(r.body),
+      };
+    } catch {
+      return { status: "error", keyConfigured: true, error: "network", plan: null, windows: [] };
+    }
+  }
+
   const stored = await readKimiCredentials();
   if (!stored) {
     return { status: "not-configured", keyConfigured: false, error: "no-credentials", plan: null, windows: [] };

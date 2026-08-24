@@ -1,57 +1,61 @@
-# dsh-ai-quota
+# Personal DeepSeek Harness Plugins
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that shows your AI subscription quotas & balances — **Codex**, **Kimi**, **DeepSeek**, **OpenCode Go** — in one place.
+[中文](README.zh-CN.md) | English
 
-English · [中文](README.zh-CN.md)
+Public DeepSeek Harness plugin bundle maintained for the `advanced_research` workspace.
 
-## Features
+## Included feature
 
-- **Model tool `query_ai_quota`** — ask any agent session to check your quota; returns a human-readable summary.
-- **Settings page** — an "AI Quota" section with per-window usage bars and balances, plus manual refresh.
-- **Composer chip** — a one-line quota indicator that follows the selected model (toggleable in Settings).
-- **Auto-refresh** — the host re-queries all providers every `refreshIntervalMs` (default 2 min; `0` disables) and serves a warm cache, so every surface reads instantly.
-- **Unified format** — providers are normalized to `subscription` windows or `balance` entries; one provider failing never affects the others.
-- **No secrets in output** — API keys and tokens never appear in tool output or logs.
+### Unified AI quota
+
+The bundle adds:
+
+- the `query_ai_quota` model tool;
+- an AI Quota page in Web Settings;
+- an optional composer quota indicator;
+- cached Codex, Kimi, DeepSeek, and OpenCode Go usage queries.
+
+Kimi credentials resolve in this order:
+
+1. the environment or DSH credential reference named by `kimiApiKeyEnv`;
+2. the Kimi Code CLI OAuth files under `~/.kimi-code` or `~/.kimi`.
+
+The shipped profile patch uses `LLM_MOONSHOT_API_KEY`, matching the central credential name in the workspace. No credential value is committed.
 
 ## Install
 
 ```sh
-dsh plugin --profile web add github:Carrick-K7/dsh-ai-quota
+npx @deepseek-ai/dsh plugin --profile web add github:wuzhongyanqiu/dsh-plugins
 ```
 
-The bundled `cordis.patch.yml` declaration makes `dsh plugin` append the plugin row to `dsh.profile.bundles` automatically. Restart `dsh web` afterwards (`pnpm` must be on PATH).
+Restart the Web profile after changing its Bundle list.
 
 ## Configuration
 
-All keys optional, defaults shown.
-
-| Key | Default | Meaning |
+| Key | Default in this bundle | Meaning |
 | --- | --- | --- |
-| `timeoutMs` | `15000` | Per-provider query timeout (ms) |
-| `refreshIntervalMs` | `120000` | Auto-refresh interval (ms); `0` = off |
-| `codexCli` | `codex` | codex CLI command or absolute path |
-| `deepseekApiKeyEnv` | `DEEPSEEK_API_KEY` | Env var name for the DeepSeek API key |
-| `opencodeGoApiKeyEnv` | `OPENCODE_GO_API_KEY` | Env var name for the OpenCode Go key |
-| `deepseekBaseUrl` | `https://api.deepseek.com` | DeepSeek API base URL |
-| `opencodeBaseUrl` | `https://opencode.ai/zen/go/v1/usage` | OpenCode Go usage endpoint |
-| `kimiBaseUrl` | `https://api.kimi.com/coding/v1` | Kimi usage endpoint base (appends `/usages`) |
-| `kimiOauthHost` | `https://auth.kimi.com` | Kimi OAuth refresh endpoint (appends `/api/oauth/token`) |
-| `kimiClientId` | Kimi Code CLI's public client id | OAuth `client_id` (usually unchanged) |
+| `timeoutMs` | `15000` | Per-provider query timeout in milliseconds |
+| `refreshIntervalMs` | `120000` | Host cache refresh interval; `0` disables it |
+| `codexCli` | `codex` | Codex CLI command or absolute path |
+| `deepseekApiKeyEnv` | `DEEPSEEK_API_KEY` | DeepSeek credential reference |
+| `kimiApiKeyEnv` | `LLM_MOONSHOT_API_KEY` | Kimi credential reference |
+| `opencodeGoApiKeyEnv` | `OPENCODE_GO_API_KEY` | OpenCode Go credential reference |
+| `kimiBaseUrl` | `https://api.kimi.com/coding/v1` | Kimi usage API base URL |
 
-## Credentials
+## External plugins
 
-- **DeepSeek / OpenCode Go**: env var named by config (defaults `DEEPSEEK_API_KEY` / `OPENCODE_GO_API_KEY`), falling back to the DSH credentials seam; OpenCode Go also falls back to the `opencode-go` entry in `~/.local/share/opencode/auth.json`.
-- **Codex / Kimi**: no keys — the local CLI login state is reused (codex CLI on PATH; Kimi Code CLI's OAuth session, auto-refreshed when expired, `kimi login` again if it is gone).
+Third-party plugins adopted by the workspace are tracked in [PLUGINS.md](PLUGINS.md). They remain independently installed dependencies so their upstream updates and permissions stay visible.
 
-## Data sources
+## Security
 
-| Provider | Source |
-| --- | --- |
-| Codex | Local `codex app-server --stdio` JSON-RPC (`account/rateLimits/read`) — 5h / 7d windows |
-| Kimi | `GET {kimiBaseUrl}/usages` (Kimi Code CLI's OAuth login state) |
-| DeepSeek | `GET {deepseekBaseUrl}/user/balance` (bearer key) |
-| OpenCode Go | `GET {opencodeBaseUrl}` (bearer key) |
+- API keys and OAuth tokens are never included in tool or Remote results.
+- This repository contains only credential reference names.
+- Git dependencies execute as trusted host code. Pin a reviewed commit when reproducibility matters.
+
+## Attribution
+
+The initial quota implementation is derived from the MIT-licensed [`Carrick-K7/dsh-ai-quota`](https://github.com/Carrick-K7/dsh-ai-quota). See [NOTICE.md](NOTICE.md).
 
 ## License
 
-[MIT](./LICENSE)
+MIT

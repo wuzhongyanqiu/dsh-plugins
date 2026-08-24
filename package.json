@@ -1,7 +1,7 @@
 {
-  "name": "dsh-ai-quota",
-  "version": "0.7.3",
-  "description": "DeepSeek Harness plugin: query AI subscription quotas & balances (Codex, Kimi, DeepSeek, OpenCode Go) as a model tool and a Settings page",
+  "name": "@wuzhongyanqiu/dsh-plugins",
+  "version": "0.1.0",
+  "description": "Personal DeepSeek Harness plugin bundle with unified AI quota monitoring",
   "license": "MIT",
   "keywords": [
     "deepseek-harness",
@@ -16,6 +16,7 @@
     "quota"
   ],
   "type": "module",
+  "packageManager": "pnpm@10.33.2",
   "main": "./index.js",
   "files": [
     "index.js",
@@ -24,6 +25,8 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
+    "PLUGINS.md",
+    "NOTICE.md",
     "LICENSE"
   ],
   "exports": {
@@ -58,13 +61,25 @@
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6"
   },
-  "author": "Carrick-K7",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "smoke": "node test-host.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-credentials": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "3.18.1",
+    "react": "18.3.1"
+  },
+  "author": "wuzhongyanqiu",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Carrick-K7/dsh-ai-quota.git"
+    "url": "git+https://github.com/wuzhongyanqiu/dsh-plugins.git"
   },
   "bugs": {
-    "url": "https://github.com/Carrick-K7/dsh-ai-quota/issues"
+    "url": "https://github.com/wuzhongyanqiu/dsh-plugins/issues"
   },
-  "homepage": "https://github.com/Carrick-K7/dsh-ai-quota#readme"
+  "homepage": "https://github.com/wuzhongyanqiu/dsh-plugins#readme"
 }

@@ -1,4 +1,4 @@
-// Client half of the dsh-ai-quota plugin.
+// Client half of the @wuzhongyanqiu/dsh-plugins quota feature.
 // Hand-written browser bundle in the lazy-CJS format the client module loader
 // expects: it only REGISTERS the factory; the body runs at materialization.
 // It mounts the aiQuota Remote, registers a settings.section sidebar entry
@@ -7,7 +7,7 @@
 //     quota window — label, slim usage bar, used %, relative reset time
 //   - balance provider (DeepSeek): remaining amount + granted/topped-up split
 window.__ModuleLoader__.load({
-  id: "dsh-ai-quota",
+  id: "@wuzhongyanqiu/dsh-plugins",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
@@ -33,7 +33,7 @@ window.__ModuleLoader__.load({
       statusError: "查询失败",
       noApiKeyDeepseek: "未找到 DeepSeek API Key（默认环境变量 DEEPSEEK_API_KEY，可在插件配置中改环境变量名）。",
       noApiKeyOpencode: "未找到 OpenCode Go API Key（默认环境变量 OPENCODE_GO_API_KEY，或 ~/.local/share/opencode/auth.json 的 opencode-go 条目）。",
-      noCredentialsKimi: "未找到 Kimi 登录态（~/.kimi-code/credentials/kimi-code.json），请先运行 kimi login。",
+      noCredentialsKimi: "未找到 Kimi API Key 或 CLI 登录态。",
       loginExpired: "Kimi 登录态已过期，请运行 kimi login 重新登录。",
       unauthorized: "API Key 无效或已过期（401）。",
       network: "网络请求失败，请稍后重试。",
@@ -69,7 +69,7 @@ window.__ModuleLoader__.load({
       statusError: "Query failed",
       noApiKeyDeepseek: "No DeepSeek API key found (default env var DEEPSEEK_API_KEY; rename via plugin config).",
       noApiKeyOpencode: "No OpenCode Go API key found (default env var OPENCODE_GO_API_KEY, or the opencode-go entry in ~/.local/share/opencode/auth.json).",
-      noCredentialsKimi: "No Kimi login state found (~/.kimi-code/credentials/kimi-code.json); run kimi login first.",
+      noCredentialsKimi: "No Kimi API key or CLI login state was found.",
       loginExpired: "Kimi login expired; run kimi login to sign in again.",
       unauthorized: "API key is invalid or expired (401).",
       network: "Network request failed, try again later.",
@@ -94,10 +94,10 @@ window.__ModuleLoader__.load({
     // parser: the Host already validates the business result against its own
     // zod schema before it crosses the wire.
     const TYPERT_REMOTE = {
-      package: "dsh-ai-quota",
+      package: "@wuzhongyanqiu/dsh-plugins",
       descriptors: [
         {
-          id: "dsh-ai-quota#aiQuota/query",
+          id: "@wuzhongyanqiu/dsh-plugins#aiQuota/query",
           service: "aiQuota",
           namespace: "aiQuota",
           method: "query",
@@ -109,19 +109,19 @@ window.__ModuleLoader__.load({
               source: "json",
               codec: {
                 mode: "strict",
-                typeSymbol: "dsh-ai-quota#ProvidersFilter",
+                typeSymbol: "@wuzhongyanqiu/dsh-plugins#ProvidersFilter",
                 schema: { parse(value) { return value; } },
               },
             },
           ],
           result: {
             mode: "strict",
-            typeSymbol: "dsh-ai-quota#AiQuotaResult",
+            typeSymbol: "@wuzhongyanqiu/dsh-plugins#AiQuotaResult",
             schema: { parse(value) { return value; } },
           },
         },
         {
-          id: "dsh-ai-quota#aiQuota/refresh",
+          id: "@wuzhongyanqiu/dsh-plugins#aiQuota/refresh",
           service: "aiQuota",
           namespace: "aiQuota",
           method: "refresh",
@@ -133,14 +133,14 @@ window.__ModuleLoader__.load({
               source: "json",
               codec: {
                 mode: "strict",
-                typeSymbol: "dsh-ai-quota#ProvidersFilter",
+                typeSymbol: "@wuzhongyanqiu/dsh-plugins#ProvidersFilter",
                 schema: { parse(value) { return value; } },
               },
             },
           ],
           result: {
             mode: "strict",
-            typeSymbol: "dsh-ai-quota#AiQuotaResult",
+            typeSymbol: "@wuzhongyanqiu/dsh-plugins#AiQuotaResult",
             schema: { parse(value) { return value; } },
           },
         },
@@ -189,7 +189,7 @@ window.__ModuleLoader__.load({
     };
 
     // Class-based bits (hover / spin) that inline styles cannot express.
-    const STYLE_TAG_ID = "dsh-ai-quota-styles";
+    const STYLE_TAG_ID = "wuzhongyanqiu-dsh-plugins-styles";
     function ensureStyleTag() {
       if (typeof document === "undefined" || document.getElementById(STYLE_TAG_ID)) return;
       const el = document.createElement("style");
@@ -367,7 +367,7 @@ window.__ModuleLoader__.load({
     }
 
     // ---- cache + per-provider independent loading ----
-    const CACHE_KEY = "dsh-ai-quota.cache.v1";
+    const CACHE_KEY = "wuzhongyanqiu-dsh-plugins.quota.cache.v1";
     const PROVIDER_NAMES = ["codex", "kimi", "opencodeGo", "deepseek"];
 
     function loadCache() {
@@ -407,7 +407,7 @@ window.__ModuleLoader__.load({
     const CHIP_MIN_ATTEMPT_MS = 60 * 1000;
 
     // On/off switch, persisted in localStorage, effective immediately.
-    const ENABLED_KEY = "dsh-ai-quota.chipEnabled";
+    const ENABLED_KEY = "wuzhongyanqiu-dsh-plugins.quota.chipEnabled";
     function isChipEnabled() {
       try {
         return window.localStorage.getItem(ENABLED_KEY) !== "0";
@@ -703,8 +703,8 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const mountReady = ctx.remote.$mount(TYPERT_REMOTE);
-      ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-ai-quota: dictionaries");
-      ctx.effect(ensureStyleTag, "dsh-ai-quota: styles");
+      ctx.effect(() => ctx.locale.register(NS, { zh, en }), "wuzhongyanqiu-dsh-plugins: dictionaries");
+      ctx.effect(ensureStyleTag, "wuzhongyanqiu-dsh-plugins: styles");
       const t = ctx.locale.bind(NS);
 
       const callRemote = (method, filter) => {

@@ -67,12 +67,12 @@ const resultSchema = z.object({
 const providersFilter = z.array(z.string()).nullable().optional();
 
 export const TYPERT = {
-  package: "dsh-ai-quota",
+  package: "@wuzhongyanqiu/dsh-plugins",
   face: "host",
   schemas: [],
   invocations: [
     {
-      id: "dsh-ai-quota#aiQuota/query",
+      id: "@wuzhongyanqiu/dsh-plugins#aiQuota/query",
       service: "aiQuota",
       namespace: "aiQuota",
       method: "query",
@@ -84,19 +84,19 @@ export const TYPERT = {
           source: "json",
           codec: {
             mode: "strict",
-            typeSymbol: "dsh-ai-quota#ProvidersFilter",
+            typeSymbol: "@wuzhongyanqiu/dsh-plugins#ProvidersFilter",
             schema: providersFilter,
           },
         },
       ],
       result: {
         mode: "strict",
-        typeSymbol: "dsh-ai-quota#AiQuotaResult",
+        typeSymbol: "@wuzhongyanqiu/dsh-plugins#AiQuotaResult",
         schema: resultSchema,
       },
     },
     {
-      id: "dsh-ai-quota#aiQuota/refresh",
+      id: "@wuzhongyanqiu/dsh-plugins#aiQuota/refresh",
       service: "aiQuota",
       namespace: "aiQuota",
       method: "refresh",
@@ -108,14 +108,14 @@ export const TYPERT = {
           source: "json",
           codec: {
             mode: "strict",
-            typeSymbol: "dsh-ai-quota#ProvidersFilter",
+            typeSymbol: "@wuzhongyanqiu/dsh-plugins#ProvidersFilter",
             schema: providersFilter,
           },
         },
       ],
       result: {
         mode: "strict",
-        typeSymbol: "dsh-ai-quota#AiQuotaResult",
+        typeSymbol: "@wuzhongyanqiu/dsh-plugins#AiQuotaResult",
         schema: resultSchema,
       },
     },
