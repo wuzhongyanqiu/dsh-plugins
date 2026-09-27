@@ -6,6 +6,8 @@
 //   - subscription providers (Codex / OpenCode Go): one compact meter row per
 //     quota window — label, slim usage bar, used %, relative reset time
 //   - balance provider (DeepSeek): remaining amount + granted/topped-up split
+// The composer chip resolves its quota provider from the selected DSH provider
+// ROUTE (never the model id); see resolveQuotaProvider below.
 window.__ModuleLoader__.load({
   id: "@wuzhongyanqiu/dsh-plugins",
   factory: (require) => {
@@ -26,13 +28,17 @@ window.__ModuleLoader__.load({
       unknown: "未知",
       providerCodex: "Codex",
       providerKimi: "Kimi",
+      providerGlm: "GLM Coding Plan",
       providerDeepseek: "DeepSeek",
+      providerAi302: "302.AI",
       providerOpencodeGo: "OpenCode Go",
       statusNotConfigured: "未配置 API Key",
       statusNotInstalled: "未安装 codex CLI",
       statusError: "查询失败",
       noApiKeyDeepseek: "未找到 DeepSeek API Key（默认环境变量 DEEPSEEK_API_KEY，可在插件配置中改环境变量名）。",
+      noApiKey302: "未找到 302.AI API Key（默认 DSH 凭据 AI_302_API_KEY，可在插件配置中改环境变量名）。",
       noApiKeyOpencode: "未找到 OpenCode Go API Key（默认环境变量 OPENCODE_GO_API_KEY，或 ~/.local/share/opencode/auth.json 的 opencode-go 条目）。",
+      noApiKeyGlm: "未找到 GLM Coding Plan API Key（默认 DSH 凭据 ZAI_CODING_CN_API_KEY，可在插件配置中改凭据名）。",
       noCredentialsKimi: "未找到 Kimi API Key 或 CLI 登录态。",
       loginExpired: "Kimi 登录态已过期，请运行 kimi login 重新登录。",
       unauthorized: "API Key 无效或已过期（401）。",
@@ -43,7 +49,6 @@ window.__ModuleLoader__.load({
       resetInHour: "{n} 小时后重置",
       resetInDay: "{n} 天后重置",
       resetPassed: "已到重置时间",
-      chipToggle: "输入框显示用量",
       chipRefresh: "点击刷新",
       noWindowData: "无窗口数据",
       noBalanceData: "无余额数据",
@@ -52,6 +57,16 @@ window.__ModuleLoader__.load({
       windowRolling: "滚动",
       windowWeekly: "每周",
       windowMonthly: "每月",
+      showSection: "显示的额度",
+      hideHint: "关闭后隐藏「{name}」的额度",
+      showHint: "打开后显示「{name}」的额度",
+      showAll: "全部显示",
+      back: "返回",
+      justNow: "刚刚",
+      agoMin: "{n} 分钟前",
+      agoHour: "{n} 小时前",
+      agoDay: "{n} 天前",
+      settingsHint: "配置展示哪些 provider 的额度",
     };
     const en = {
       nav: "AI Quota",
@@ -62,13 +77,17 @@ window.__ModuleLoader__.load({
       unknown: "unknown",
       providerCodex: "Codex",
       providerKimi: "Kimi",
+      providerGlm: "GLM Coding Plan",
       providerDeepseek: "DeepSeek",
+      providerAi302: "302.AI",
       providerOpencodeGo: "OpenCode Go",
       statusNotConfigured: "API key not configured",
       statusNotInstalled: "codex CLI not installed",
       statusError: "Query failed",
       noApiKeyDeepseek: "No DeepSeek API key found (default env var DEEPSEEK_API_KEY; rename via plugin config).",
+      noApiKey302: "No 302.AI API key found (DSH credential AI_302_API_KEY; rename via plugin config).",
       noApiKeyOpencode: "No OpenCode Go API key found (default env var OPENCODE_GO_API_KEY, or the opencode-go entry in ~/.local/share/opencode/auth.json).",
+      noApiKeyGlm: "No GLM Coding Plan API key found (DSH credential ZAI_CODING_CN_API_KEY; rename via plugin config).",
       noCredentialsKimi: "No Kimi API key or CLI login state was found.",
       loginExpired: "Kimi login expired; run kimi login to sign in again.",
       unauthorized: "API key is invalid or expired (401).",
@@ -79,7 +98,6 @@ window.__ModuleLoader__.load({
       resetInHour: "resets in {n} h",
       resetInDay: "resets in {n} d",
       resetPassed: "reset time passed",
-      chipToggle: "Composer chip",
       noWindowData: "no window data",
       noBalanceData: "no balance data",
       window5h: "5h",
@@ -88,6 +106,16 @@ window.__ModuleLoader__.load({
       windowWeekly: "weekly",
       windowMonthly: "monthly",
       chipRefresh: "Click to refresh",
+      showSection: "Shown readouts",
+      hideHint: "Turn off to hide {name}",
+      showHint: "Turn on to show {name}",
+      showAll: "Show all",
+      back: "Back",
+      justNow: "just now",
+      agoMin: "{n} min ago",
+      agoHour: "{n} h ago",
+      agoDay: "{n} d ago",
+      settingsHint: "Choose which providers' quotas are shown",
     };
 
     // Client-side Remote contribution. The result codec is a pass-through
@@ -151,41 +179,56 @@ window.__ModuleLoader__.load({
     // One slim list, hairline separators, no cards. Usage bars use a solid
     // severity color (emerald → amber → red) instead of a full-width
     // gradient: the color answers "should I worry" at a glance.
-    const COLOR_OK = "#10b981";
-    const COLOR_WARN = "#f59e0b";
-    const COLOR_CRIT = "#ef4444";
+    //
+    // Every color is a CSS variable with the shipped value as its fallback,
+    // so a skin can repaint the readouts without touching the code: when the
+    // miku skin is detected the module sets [data-dsh-aq-miku] on <html> and
+    // the stylesheet below swaps in soft Hatsune teals.
+    const COLOR_OK = "var(--dsh-aq-ok, #10b981)";
+    const COLOR_WARN = "var(--dsh-aq-warn, #f59e0b)";
+    const COLOR_CRIT = "var(--dsh-aq-crit, #ef4444)";
     const MUTED = "var(--dsw-alias-label-tertiary)";
     const styles = {
       wrap: { maxWidth: 680, display: "flex", flexDirection: "column", gap: 10, padding: "4px 0" },
       head: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "0 2px" },
-      title: { fontSize: 15, fontWeight: 600, margin: 0, letterSpacing: "-.01em" },
+      title: { fontSize: 16, fontWeight: 600, margin: 0, letterSpacing: "-.01em" },
       headRight: { display: "flex", alignItems: "center", gap: 8 },
-      updated: { color: MUTED, fontSize: 12, margin: 0 },
+      updated: { color: MUTED, fontSize: 13, margin: 0 },
       list: { border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 12, padding: "2px 16px", background: "var(--dsw-alias-bg-layer-3)" },
       provider: { padding: "12px 0", display: "flex", flexDirection: "column", gap: 8 },
       providerDivider: { borderTop: "1px solid var(--dsw-alias-border-l1)" },
       providerHead: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 },
-      providerName: { fontSize: 13, fontWeight: 600, margin: 0, display: "flex", alignItems: "center", gap: 7 },
+      providerName: { fontSize: 14, fontWeight: 600, margin: 0, display: "flex", alignItems: "center", gap: 7 },
       statusDot: { width: 7, height: 7, borderRadius: "50%", display: "inline-block", flex: "none" },
       windowRow: { display: "grid", gridTemplateColumns: "minmax(40px, max-content) minmax(60px, 1fr) auto", alignItems: "center", gap: 12, minHeight: 20 },
-      windowLabel: { fontSize: 12, color: "var(--dsw-alias-label-secondary)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      windowLabel: { fontSize: 13, color: "var(--dsw-alias-label-secondary)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
       barTrack: { height: 5, borderRadius: 999, background: "var(--dsw-alias-bg-layer-1)", border: "1px solid var(--dsw-alias-border-l2)", boxSizing: "border-box", overflow: "hidden" },
-      windowStat: { fontSize: 12, margin: 0, display: "flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" },
-      windowPct: { fontWeight: 600, fontSize: 12, minWidth: 34, textAlign: "right", display: "inline-block" },
+      windowStat: { fontSize: 13, margin: 0, display: "flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" },
+      windowPct: { fontWeight: 600, fontSize: 13, minWidth: 34, textAlign: "right", display: "inline-block" },
       windowReset: { color: MUTED },
-      hint: { color: MUTED, fontSize: 12, lineHeight: 1.6, margin: 0 },
-      error: { color: "var(--dsw-alias-state-error-primary)", fontSize: 12, lineHeight: 1.6, margin: 0 },
-      amount: { fontSize: 16, fontWeight: 700, margin: 0, letterSpacing: "-.01em", color: "var(--dsw-alias-label-primary)", whiteSpace: "nowrap" },
-      chipName: { color: "var(--dsw-alias-label-secondary)", fontWeight: 600 },
-      chipValue: { fontWeight: 600, color: "var(--dsw-alias-label-primary)" },
+      hint: { color: MUTED, fontSize: 13, lineHeight: 1.6, margin: 0 },
+      error: { color: "var(--dsw-alias-state-error-primary)", fontSize: 13, lineHeight: 1.6, margin: 0 },
+      amount: { fontSize: 16, fontWeight: 700, margin: 0, letterSpacing: "-.01em", color: "var(--dsh-aq-accent, var(--dsw-alias-label-primary))", whiteSpace: "nowrap" },
+      chipName: { color: "var(--dsh-aq-name, var(--dsw-alias-label-secondary))", fontWeight: 600 },
+      chipValue: { fontWeight: 600, color: "var(--dsh-aq-accent, var(--dsw-alias-label-primary))" },
       chipSeg: { display: "inline-flex", alignItems: "center", gap: 6 },
-      chipSegLabel: { color: MUTED },
-      chipSegReset: { color: MUTED },
-      chipMiniTrack: { display: "inline-block", width: 44, height: 4, borderRadius: 999, border: "1px solid var(--dsw-alias-border-l2)", boxSizing: "border-box", background: "var(--dsw-alias-bg-layer-1)", overflow: "hidden" },
+      chipSegLabel: { color: "var(--dsh-aq-label, " + MUTED + ")" },
+      chipSegReset: { color: "var(--dsh-aq-label, " + MUTED + ")" },
+      chipMiniTrack: { display: "inline-block", width: 44, height: 4, borderRadius: 999, border: "1px solid var(--dsh-aq-track-border, var(--dsw-alias-border-l2))", boxSizing: "border-box", background: "var(--dsh-aq-track, var(--dsw-alias-bg-layer-1))", overflow: "hidden" },
       chipMiniFill: { display: "block", height: "100%", borderRadius: 999 },
       skelBar: { display: "inline-block", width: 44, height: 4, borderRadius: 999, background: "var(--dsw-alias-border-l2)" },
       skelText: { display: "inline-block", width: 68, height: 9, borderRadius: 5, background: "var(--dsw-alias-border-l2)" },
       skelName: { display: "inline-block", width: 36, height: 9, borderRadius: 5, background: "var(--dsw-alias-border-l2)" },
+      // ---- the embedded settings page ----
+      subPage: { display: "flex", flexDirection: "column", gap: 10 },
+      subHead: { display: "flex", alignItems: "center", gap: 10 },
+      subTitle: { fontSize: 14, fontWeight: 600, margin: 0 },
+      settingsList: { border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 12, background: "var(--dsw-alias-bg-layer-3)", overflow: "hidden" },
+      settingRow: { display: "flex", alignItems: "center", gap: 12, padding: "11px 14px" },
+      settingText: { flex: 1, display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
+      settingName: { fontSize: 13, fontWeight: 600 },
+      settingNote: { fontSize: 11, color: MUTED },
+      subFoot: { display: "flex", justifyContent: "flex-end" },
     };
 
     // Class-based bits (hover / spin) that inline styles cannot express.
@@ -201,13 +244,32 @@ window.__ModuleLoader__.load({
         ".dsh-ab-refresh.spinning svg{animation:dsh-ab-spin .9s linear infinite}",
         "@keyframes dsh-ab-spin{to{transform:rotate(360deg)}}",
         ".dsh-ab-chip{display:inline-flex;align-items:baseline;gap:5px;font-size:12px;line-height:20px;cursor:pointer;user-select:none;white-space:nowrap;padding:0 2px;border-radius:6px}",
-        ".dsh-ab-chip:hover{background:var(--dsw-alias-bg-layer-1)}",
+        ".dsh-ab-chip:hover{background:var(--dsh-aq-hover, var(--dsw-alias-bg-layer-1))}",
+        // Miku skin palette: opt-in Hatsune teals. The [data-dsh-aq-miku]
+        // flag lands on <html> only while dsk-miku-skin is loaded, and the
+        // dark block keys off the skin's own body[data-ds-dark-theme] theme
+        // attribute — so without the skin every readout keeps its shipped
+        // emerald/amber/red severity colors.
+        "[data-dsh-aq-miku]{--dsh-aq-ok:#22a39b;--dsh-aq-accent:#15847e;--dsh-aq-name:#2f9d94;--dsh-aq-label:#5b7874;--dsh-aq-track:rgba(34,163,155,.14);--dsh-aq-track-border:rgba(34,163,155,.24);--dsh-aq-hover:rgba(34,163,155,.08)}",
+        "[data-dsh-aq-miku] body[data-ds-dark-theme]{--dsh-aq-ok:#39c5bb;--dsh-aq-accent:#6ed6ce;--dsh-aq-name:#39c5bb;--dsh-aq-label:#7a9a96;--dsh-aq-track:rgba(57,197,187,.16);--dsh-aq-track-border:rgba(57,197,187,.26);--dsh-aq-hover:rgba(57,197,187,.10)}",
         ".dsh-ab-skel{animation:dsh-ab-pulse 1.3s ease-in-out infinite}",
         "@keyframes dsh-ab-pulse{0%,100%{opacity:.35}50%{opacity:.85}}",
-        ".dsh-ab-switch{position:relative;display:inline-flex;align-items:center;width:26px;height:15px;border-radius:999px;border:none;padding:0;cursor:pointer;background:var(--dsw-alias-border-l2);transition:background .15s ease;vertical-align:middle}",
-        ".dsh-ab-switch[data-on=true]{background:#15847e}",
-        ".dsh-ab-switch::after{content:'';position:absolute;left:2px;top:2px;width:11px;height:11px;border-radius:50%;background:#fff;transition:transform .15s ease}",
-        ".dsh-ab-switch[data-on=true]::after{transform:translateX(11px)}",
+        // Per-provider visibility switches: a pill per provider, filled when the
+        // readout is shown, dashed when the user hid it, dotted + faded when the
+        // host never detected anything to show.
+        ".dsh-ab-gear{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;padding:0;transition:background .15s ease,color .15s ease}",
+        ".dsh-ab-gear:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}",
+        ".dsh-ab-gear svg{display:block}",
+        ".dsh-ab-back{display:inline-flex;align-items:center;gap:5px;font-size:12px;line-height:24px;height:26px;padding:0 9px 0 7px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background .15s ease,color .15s ease}",
+        ".dsh-ab-back:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}",
+        // A real switch, the shape a settings row promises.
+        ".dsh-ab-switch{position:relative;flex:none;width:36px;height:20px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);cursor:pointer;padding:0;transition:background .15s ease,border-color .15s ease}",
+        ".dsh-ab-switch.on{background:var(--dsh-aq-ok, #10b981);border-color:transparent}",
+        ".dsh-ab-switch:disabled{opacity:.4;cursor:default}",
+        ".dsh-ab-switch-knob{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s ease}",
+        ".dsh-ab-switch.on .dsh-ab-switch-knob{transform:translateX(16px)}",
+        ".dsh-ab-visreset{font-size:12px;line-height:22px;color:var(--dsw-alias-label-tertiary);background:none;border:none;cursor:pointer;padding:0 2px;text-decoration:underline}",
+        ".dsh-ab-visreset:hover{color:var(--dsw-alias-label-primary)}",
         // Hero fallback placement: the hero composer is a flex column where the
         // token heatmap's root uses order:99 to drop below the input card. Our
         // chip span is a direct seat child (the seat is display:contents), so
@@ -218,25 +280,93 @@ window.__ModuleLoader__.load({
       document.head.appendChild(el);
     }
 
+    /**
+     * Skin bridge: flag <html> while the miku skin's stylesheet is mounted, so
+     * the CSS variable swap above applies. Pure CSS variable inheritance means
+     * the repaint needs no React re-render, and the observer handles the skin
+     * loading after this plugin (it is a separate client plugin).
+     */
+    const MIKU_ATTR = "data-dsh-aq-miku";
+    function syncMikuSkin() {
+      try {
+        const on = !!document.querySelector('style[data-plugin-css^="dsk-miku-skin"], style[data-plugin="dsk-miku-skin"]');
+        const root = document.documentElement;
+        if (on !== root.hasAttribute(MIKU_ATTR)) root.toggleAttribute(MIKU_ATTR, on);
+      } catch {
+        /* ignore */
+      }
+    }
+    function watchMikuSkin() {
+      syncMikuSkin();
+      if (typeof MutationObserver !== "function" || typeof document === "undefined") return () => {};
+      const mo = new MutationObserver(syncMikuSkin);
+      mo.observe(document.head, { childList: true, subtree: true });
+      return () => mo.disconnect();
+    }
+
     const RefreshIcon = () =>
       React.createElement("svg", { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round", strokeLinejoin: "round" },
         React.createElement("polyline", { points: "23 4 23 10 17 10" }),
         React.createElement("path", { d: "M20.49 15a9 9 0 1 1-2.12-9.36L23 10" })
       );
 
-    /** Solid severity color for a used-percentage: green < 70 ≤ amber < 90 ≤ red. */
-    function usageColor(used) {
-      if (used === null) return COLOR_OK;
-      if (used >= 90) return COLOR_CRIT;
-      if (used >= 70) return COLOR_WARN;
-      return COLOR_OK;
+    const GearIcon = () =>
+      React.createElement("svg", { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+        React.createElement("circle", { cx: 12, cy: 12, r: 3.1 }),
+        React.createElement("path", { d: "M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.7 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.54a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.1 4.7a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.46 9v.09A1.7 1.7 0 0 0 21 10.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z" })
+      );
+
+    const BackIcon = () =>
+      React.createElement("svg", { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round", strokeLinejoin: "round" },
+        React.createElement("polyline", { points: "15 18 9 12 15 6" })
+      );
+
+    /** Severity band of a used-percentage: green < 70 ≤ amber < 90 ≤ red. */
+    function usageLevel(used) {
+      if (used === null) return "ok";
+      if (used >= 90) return "crit";
+      if (used >= 70) return "warn";
+      return "ok";
     }
 
-    function fmtUpdatedAt(iso, t) {
+    /** Solid severity color for a used-percentage. */
+    function usageColor(used) {
+      const level = usageLevel(used);
+      return level === "crit" ? COLOR_CRIT : level === "warn" ? COLOR_WARN : COLOR_OK;
+    }
+
+    /** The meter's hairline: neutral while healthy, the severity color once it warns. */
+    function meterBorder(level) {
+      if (level === "crit") return COLOR_CRIT;
+      if (level === "warn") return COLOR_WARN;
+      return "var(--dsh-aq-track-border, var(--dsw-alias-border-l2))";
+    }
+
+    /** "更新于 3 分钟前" — a snapshot's age is what matters, not the clock face. */
+    function fmtUpdatedAt(iso, t, now) {
       if (!iso) return "";
       const d = new Date(iso);
       if (Number.isNaN(d.getTime())) return "";
-      return t("updatedAt").replace("{time}", d.toLocaleTimeString());
+      const reference = typeof now === "number" ? now : Date.now();
+      const mins = Math.floor((reference - d.getTime()) / 60000);
+      if (!Number.isFinite(mins) || mins < 1) return t("updatedAt").replace("{time}", t("justNow"));
+      if (mins < 60) return t("updatedAt").replace("{time}", t("agoMin").replace("{n}", String(mins)));
+      const hours = Math.floor(mins / 60);
+      if (hours < 24) return t("updatedAt").replace("{time}", t("agoHour").replace("{n}", String(hours)));
+      return t("updatedAt").replace("{time}", t("agoDay").replace("{n}", String(Math.floor(hours / 24))));
+    }
+
+    /**
+     * A clock that re-renders its component on an interval, so a relative
+     * "updated" line keeps counting instead of freezing at its first render.
+     */
+    function useNow(intervalMs) {
+      const [now, setNow] = React.useState(() => Date.now());
+      React.useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), intervalMs);
+        return () => clearInterval(timer);
+      }, [intervalMs]);
+      return now;
     }
 
     function fmtRelative(iso, t) {
@@ -267,6 +397,8 @@ window.__ModuleLoader__.load({
       const e = value.error || "";
       if (value.status === "not-configured") {
         if (name === "deepseek") return t("noApiKeyDeepseek");
+        if (name === "ai302") return t("noApiKey302");
+        if (name === "glm") return t("noApiKeyGlm");
         if (name === "kimi") return e === "login-expired" ? t("loginExpired") : t("noCredentialsKimi");
         return t("noApiKeyOpencode");
       }
@@ -286,6 +418,7 @@ window.__ModuleLoader__.load({
       const { w, t } = props;
       const used = pct(w.usedPercent);
       const left = pct(w.remainingPercent);
+      const level = usageLevel(used);
       const color = usageColor(used);
       const label = windowLabel(w.name, t);
       const fill = {
@@ -298,7 +431,9 @@ window.__ModuleLoader__.load({
       const barTitle = left === null ? undefined : t("remainingShort") + " " + left + "%";
       return React.createElement("div", { style: styles.windowRow },
         React.createElement("span", { style: styles.windowLabel, title: label }, label),
-        React.createElement("div", { style: styles.barTrack, title: barTitle },
+        // The hairline follows the fill once the bar warns: a red bar in a
+        // neutral grey outline reads as two different states at once.
+        React.createElement("div", { style: { ...styles.barTrack, borderColor: meterBorder(level) }, title: barTitle },
           React.createElement("div", { style: fill })
         ),
         React.createElement("span", { style: styles.windowStat },
@@ -325,7 +460,7 @@ window.__ModuleLoader__.load({
       const b = (value.balances || [])[0];
       if (!b || b.totalBalance === null || b.totalBalance === undefined) return null;
       return React.createElement("p", { style: styles.amount },
-        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-label-secondary)", marginRight: 2 } }, currencySymbol(b.currency)),
+        React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsh-aq-name, var(--dsw-alias-label-secondary))", marginRight: 2 } }, currencySymbol(b.currency)),
         b.totalBalance
       );
     }
@@ -368,7 +503,7 @@ window.__ModuleLoader__.load({
 
     // ---- cache + per-provider independent loading ----
     const CACHE_KEY = "wuzhongyanqiu-dsh-plugins.quota.cache.v1";
-    const PROVIDER_NAMES = ["codex", "kimi", "opencodeGo", "deepseek"];
+    const PROVIDER_NAMES = ["codex", "kimi", "glm", "opencodeGo", "deepseek", "ai302"];
 
     function loadCache() {
       try {
@@ -392,53 +527,238 @@ window.__ModuleLoader__.load({
       }
     }
 
-    // ---- composer balance chip -----------------------------------------
-    // A minimal readout under the input box: current model → provider → its
-    // quota windows. Fixed seat: conversation.composer.dock (below the input
-    // card, next to the shipped stats line); on the new-chat hero — which has
-    // no composer.dock seat — it falls back to conversation.input.dock,
-    // stacked above the token heatmap.
+    // Providers that were never detected — no key configured, CLI not
+    // installed, or not covered by the current request — leave the page clean:
+    // their row is hidden until something is configured, then it appears
+    // automatically on the next refresh. Real errors (HTTP 401, timeouts) stay
+    // visible for diagnosis.
+    const HIDDEN_STATUSES = ["skipped", "not-configured", "not-installed"];
 
+    // ---- per-provider visibility ----------------------------------------
+    // The plugin hides a provider it never detected; this is the user's own
+    // switch on top of that, for the keys that WERE detected (a plan you no
+    // longer care about, an aggregator you only use occasionally). Unset means
+    // visible, so a provider configured later shows up on its own. Stored per
+    // browser in localStorage next to the chip cache: flipping a switch is
+    // instant and needs no host round-trip or plugin reload.
+    const VISIBILITY_KEY = "dsh-ai-quota.visible.v1";
+
+    function loadVisibility() {
+      const hidden = {};
+      try {
+        const raw = window.localStorage.getItem(VISIBILITY_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          for (const name of PROVIDER_NAMES) if (parsed[name] === false) hidden[name] = false;
+        }
+      } catch {
+        /* ignore */
+      }
+      return hidden;
+    }
+
+    let hiddenProviders = loadVisibility();
+    const visibilityListeners = new Set();
+
+    function subscribeVisibility(fn) {
+      visibilityListeners.add(fn);
+      return () => visibilityListeners.delete(fn);
+    }
+
+    /** Stable identity until a switch flips (useSyncExternalStore contract). */
+    function visibilitySnapshot() {
+      return hiddenProviders;
+    }
+
+    function setProviderVisible(name, visible) {
+      const next = { ...hiddenProviders };
+      if (visible) delete next[name];
+      else next[name] = false;
+      hiddenProviders = next;
+      try {
+        window.localStorage.setItem(VISIBILITY_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      visibilityListeners.forEach((f) => f());
+    }
+
+    // ---- the visibility sub-page, embedded in the settings section -------
+    // A second level inside the AI Quota section rather than a strip of chips
+    // over the readouts: the section shows the quotas, and its "显示项" entry
+    // opens this list of switches. A provider with nothing detected keeps its
+    // row (so the reason is visible) but its switch is inert.
+
+    /** One provider's row on the sub-page: name, switch, and - only when it
+     *  cannot be switched on - the concrete reason why. A provider that can be
+     *  toggled needs no "detected" badge: the switch already says it. */
+    function VisibilityRow(props) {
+      const { t, name, detected, on, onToggle, reason } = props;
+      const label = t("provider" + name.charAt(0).toUpperCase() + name.slice(1));
+      const title = detected
+        ? (on ? t("hideHint") : t("showHint")).replace("{name}", label)
+        : (reason || undefined);
+      // A provider with nothing detected reads as off: there is no readout to
+      // show, so a disabled "on" switch would lie.
+      const checked = detected && on;
+      return React.createElement("div", { style: styles.settingRow },
+        React.createElement("div", { style: styles.settingText },
+          React.createElement("span", { style: styles.settingName }, label),
+          reason ? React.createElement("span", { style: styles.settingNote }, reason) : null
+        ),
+        React.createElement("button", {
+          type: "button",
+          className: "dsh-ab-switch" + (checked ? " on" : ""),
+          role: "switch",
+          "aria-checked": checked,
+          "aria-label": label,
+          disabled: !detected,
+          title,
+          onClick: detected ? () => onToggle(name, !on) : undefined,
+        }, React.createElement("span", { className: "dsh-ab-switch-knob" }))
+      );
+    }
+
+    /** The embedded settings page: back to the quotas, then one switch per provider. */
+    function VisibilitySettings(props) {
+      const { t, hidden, statuses, values, onBack } = props;
+      const anyHidden = PROVIDER_NAMES.some((name) => hidden[name] === false);
+      // Only a provider that cannot be switched on gets an explanation, and it
+      // is the concrete one (which key/CLI/login state is missing), not a
+      // restatement of the disabled switch.
+      const reasonOf = (name) => {
+        const status = statuses[name];
+        if (status === "not-installed") return t("statusNotInstalled");
+        if (status === "not-configured") return errorText(values[name] || { status }, t, name);
+        // "skipped" 只是还没查（或本轮没请求），没有可解释的原因。
+        return "";
+      };
+      return React.createElement("div", { style: styles.subPage },
+        React.createElement("div", { style: styles.subHead },
+          React.createElement("button", {
+            type: "button",
+            className: "dsh-ab-back",
+            onClick: onBack,
+            title: t("back"),
+            "aria-label": t("back"),
+          }, React.createElement(BackIcon), t("back")),
+          React.createElement("h3", { style: styles.subTitle }, t("showSection"))
+        ),
+        React.createElement("div", { style: styles.settingsList },
+          PROVIDER_NAMES.map((name) => {
+            const detected = !HIDDEN_STATUSES.includes(statuses[name]);
+            return React.createElement(VisibilityRow, {
+              key: name,
+              t,
+              name,
+              on: hidden[name] !== false,
+              detected,
+              reason: detected ? "" : reasonOf(name),
+              onToggle: setProviderVisible,
+            });
+          })
+        ),
+        anyHidden
+          ? React.createElement("div", { style: styles.subFoot },
+              React.createElement("button", {
+                type: "button",
+                className: "dsh-ab-visreset",
+                title: t("showAll"),
+                onClick: () => PROVIDER_NAMES.forEach((name) => setProviderVisible(name, true)),
+              }, t("showAll"))
+            )
+          : null
+      );
+    }
+
+    // ---- composer balance chip -----------------------------------------
+    // A minimal readout under the input box: current provider route → its
+    // quota account → that provider's windows. Fixed seat:
+    // conversation.composer.dock (below the input card, next to the shipped
+    // stats line); on the new-chat hero — which has no composer.dock seat —
+    // it falls back to conversation.input.dock, stacked above the token
+    // heatmap. While the seat is mounted (an open conversation) the readout
+    // re-reads on CHIP_POLL_MS so a long session never keeps an old balance.
+
+    // The composer quota chip itself has no on/off switch: it follows the
+    // selected provider route. The settings page's per-provider switches do
+    // reach it, though — a provider the user turned off shows no chip, exactly
+    // like a route this plugin does not recognize.
     const CHIP_SEATS = [
       ["above", "conversation.input.dock", 5],
       ["below", "conversation.composer.dock", 30],
     ];
     const CHIP_TTL_MS = 10 * 60 * 1000;
     const CHIP_MIN_ATTEMPT_MS = 60 * 1000;
+    // A conversation left open must not keep showing the balance it had when
+    // the page loaded, so the chip re-reads the quota on a fixed interval
+    // (below). The Host keeps its own snapshot warm on its refreshIntervalMs
+    // schedule, so this is normally just a cheap cache read.
+    const CHIP_POLL_MS = 60 * 1000;
+    // If even the Host snapshot is this old, its scheduler is off or stalled
+    // (refreshIntervalMs: 0): the scheduled poll then escalates from a cache
+    // read to a real query instead of re-serving an old balance.
+    const CHIP_STALE_MS = 10 * 60 * 1000;
 
-    // On/off switch, persisted in localStorage, effective immediately.
-    const ENABLED_KEY = "wuzhongyanqiu-dsh-plugins.quota.chipEnabled";
-    function isChipEnabled() {
-      try {
-        return window.localStorage.getItem(ENABLED_KEY) !== "0";
-      } catch {
-        return true;
+    // ---- provider route → quota provider --------------------------------
+    // The chip must name the ACCOUNT the selected route bills, so the DSH
+    // provider ROUTE is the only authority. One model id is served by several
+    // routes with completely independent quotas — this deployment runs
+    // kimi-k3 on both `opencode-go-carrick` (an OpenCode Go plan) and
+    // `kimi-coding` (the Kimi subscription), and deepseek-flash on both
+    // `opencode-go-carrick` and `deepseek-official` — so a model-id guess
+    // prints another account's balance. An unrecognized route therefore shows
+    // no chip at all: a missing number beats a wrong one.
+    //
+    // Order matters only for a route whose id carries two vendor tokens
+    // (e.g. `opencode-302`): the more specific relay/aggregator wins.
+    const ROUTE_PROVIDERS = [
+      ["ai302", ["302"]],
+      ["opencodeGo", ["opencode"]],
+      ["codex", ["codex"]],
+      ["kimi", ["kimi", "moonshot"]],
+      ["deepseek", ["deepseek"]],
+      // GLM Coding Plan routes are named after the vendor (zai-coding-cn,
+      // glm-cn, zhipu-bigmodel-coding); `glm` also covers a route that merely
+      // names its plan.
+      ["glm", ["zai", "zhipu", "bigmodel", "glm"]],
+    ];
+
+    /** Match one route id (or provider display name) against the vendor tokens. */
+    function providerFromText(text) {
+      const s = ((text || "") + "").toLowerCase();
+      if (!s) return null;
+      for (const [name, tokens] of ROUTE_PROVIDERS) {
+        for (const token of tokens) {
+          if (s.indexOf(token) >= 0) return name;
+        }
       }
-    }
-    const enabledListeners = new Set();
-    function setChipEnabled(v) {
-      try { window.localStorage.setItem(ENABLED_KEY, v ? "1" : "0"); } catch { /* ignore */ }
-      enabledListeners.forEach((f) => f());
-    }
-    function subscribeChipEnabled(fn) {
-      enabledListeners.add(fn);
-      return () => enabledListeners.delete(fn);
-    }
-
-    /** Heuristic: DSH model selection (provider route + model id) → our provider. */
-    function mapModelToProvider(provider, model) {
-      const s = ((provider || "") + "/" + (model || "")).toLowerCase();
-      if (s.indexOf("kimi") >= 0 || s.indexOf("moonshot") >= 0) return "kimi";
-      if (s.indexOf("codex") >= 0 || s.indexOf("openai") >= 0 || s.indexOf("gpt") >= 0) return "codex";
-      if (s.indexOf("deepseek") >= 0) return "deepseek";
-      if (s.indexOf("opencode") >= 0) return "opencodeGo";
       return null;
     }
 
-    // Chip data: provider → { value, at, status }. Seeded from the shared page
-    // cache; fresh results are written back to it so both surfaces stay
-    // consistent. status: "ready" | "loading" | "error" — stale data stays
-    // visible while a refresh is in flight (no disappear-then-appear).
+    /**
+     * Resolve the quota provider for a DSH provider route. The route id is the
+     * primary signal; the route's own catalog group name is a fallback for an
+     * installation that registered the route under an opaque alias. The model
+     * id is deliberately never consulted.
+     */
+    function resolveQuotaProvider(route, groups) {
+      const direct = providerFromText(route);
+      if (direct) return direct;
+      const id = ((route || "") + "");
+      for (const g of Array.isArray(groups) ? groups : []) {
+        if (!g || ((g.id || "") + "") !== id) continue;
+        return providerFromText(g.name);
+      }
+      return null;
+    }
+
+    // Chip data: provider → { value, at, fetchedAt, status }. Seeded from the
+    // shared page cache; fresh results are written back to it so both surfaces
+    // stay consistent. status: "ready" | "loading" | "error" — stale data
+    // stays visible while a refresh is in flight (no disappear-then-appear).
+    // `at` is when this client last read the provider; `fetchedAt` is when the
+    // Host produced the snapshot it read, which is what staleness is judged on.
     const chipState = (() => {
       const cached = loadCache();
       const state = {};
@@ -446,13 +766,16 @@ window.__ModuleLoader__.load({
         const at = Date.parse(cached.fetchedAt) || 0;
         for (const name of PROVIDER_NAMES) {
           const prov = cached.providers[name];
-          if (prov) state[name] = { value: prov, at, status: "ready" };
+          if (prov) state[name] = { value: prov, at, fetchedAt: cached.fetchedAt, status: "ready" };
         }
       }
       return state;
     })();
     const chipListeners = new Set();
     const chipAttempts = new Map();
+    // One Remote read per provider at a time: the chip is mounted in every
+    // candidate seat, and the poll timer fires in each of them.
+    const chipInflight = new Set();
     function subscribeChipStore(fn) {
       chipListeners.add(fn);
       return () => chipListeners.delete(fn);
@@ -461,31 +784,65 @@ window.__ModuleLoader__.load({
       chipState[provider] = record;
       chipListeners.forEach((f) => f());
     }
-    function chipEnsure(query, refresh, provider, force) {
+    /**
+     * Read one provider's quota into the chip store.
+     * @param force  - skip the TTL/attempt guards and query upstream (`refresh`)
+     * @param silent - a background poll: no loading flicker, and a failure
+     *                 keeps the last good reading instead of the error state.
+     */
+    function chipEnsure(query, refresh, provider, force, silent) {
       const now = Date.now();
       const cur = chipState[provider];
-      if (!force && cur && cur.at > 0 && now - cur.at < CHIP_TTL_MS) return;
+      if (!force && !silent && cur && cur.at > 0 && now - cur.at < CHIP_TTL_MS) return;
+      if (chipInflight.has(provider)) return;
       const lastTry = chipAttempts.get(provider) || 0;
-      if (!force && now - lastTry < CHIP_MIN_ATTEMPT_MS) return;
+      if (!force && !silent && now - lastTry < CHIP_MIN_ATTEMPT_MS) return;
       chipAttempts.set(provider, now);
-      chipSet(provider, { value: cur && cur.value ? cur.value : null, at: cur ? cur.at : 0, status: "loading" });
+      chipInflight.add(provider);
+      if (!silent) {
+        chipSet(provider, { value: cur && cur.value ? cur.value : null, at: cur ? cur.at : 0, fetchedAt: cur ? cur.fetchedAt : null, status: "loading" });
+      }
       Promise.resolve()
         .then(() => (force ? refresh : query)([provider]))
         .then((result) => {
           if (!result || result.ok === false) throw new Error("remote failed");
           const prov = result.value && result.value.providers && result.value.providers[provider];
           if (!prov || prov.status === "skipped") throw new Error("skipped");
-          chipSet(provider, { value: prov, at: Date.now(), status: "ready" });
+          const fetchedAt = (result.value && result.value.fetchedAt) || null;
+          chipSet(provider, { value: prov, at: Date.now(), fetchedAt, status: "ready" });
           const cached = loadCache();
           saveCache({
-            fetchedAt: new Date().toISOString(),
+            fetchedAt: fetchedAt || new Date().toISOString(),
             providers: { ...(cached ? cached.providers : {}), [provider]: prov },
           });
         })
         .catch(() => {
+          if (silent) return;
           const c = chipState[provider];
-          chipSet(provider, { value: c && c.value ? c.value : null, at: c ? c.at : 0, status: "error" });
+          chipSet(provider, { value: c && c.value ? c.value : null, at: c ? c.at : 0, fetchedAt: c ? c.fetchedAt : null, status: "error" });
+        })
+        .finally(() => {
+          chipInflight.delete(provider);
         });
+    }
+
+    /**
+     * Scheduled read for an open conversation. A cache read (`query`) is enough
+     * while the Host scheduler is keeping its snapshot warm; when that snapshot
+     * is older than CHIP_STALE_MS the poll asks for a real query (`refresh`)
+     * instead, so the chip cannot sit on an old balance. That escalation is
+     * itself throttled to one upstream query per CHIP_STALE_MS per provider —
+     * a Host with auto-refresh disabled must not spawn its CLI providers on
+     * every poll.
+     */
+    const chipUpstreamAt = new Map();
+    function chipPoll(query, refresh, provider) {
+      const cur = chipState[provider];
+      const fetchedMs = cur && cur.fetchedAt ? Date.parse(cur.fetchedAt) : NaN;
+      const stale = !Number.isFinite(fetchedMs) || Date.now() - fetchedMs > CHIP_STALE_MS;
+      const escalate = stale && Date.now() - (chipUpstreamAt.get(provider) || 0) > CHIP_STALE_MS;
+      if (escalate) chipUpstreamAt.set(provider, Date.now());
+      chipEnsure(query, refresh, provider, escalate, true);
     }
 
     /** The hero (new-chat) composer has no composer.dock seat — detect it. */
@@ -515,7 +872,6 @@ window.__ModuleLoader__.load({
 
     function BalanceChip(props) {
       const { seat, available, directory, load, query, refresh, t } = props;
-      const enabled = React.useSyncExternalStore(subscribeChipEnabled, isChipEnabled);
       const subscribeDirectory = React.useCallback(
         (cb) => (directory ? directory.subscribe(cb) : () => {}),
         [directory]
@@ -527,8 +883,33 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { if (available && load) load(); }, [available, load]);
       const current = dirState ? dirState.current : null;
       const dirLoading = !!dirState && (dirState.status === "idle" || dirState.status === "loading");
-      const provider = available && current ? mapModelToProvider(current.provider, current.model) : null;
+      // The user's own switches (settings page) apply here too: a provider
+      // turned off there shows no chip, exactly like an unmapped route.
+      const hidden = React.useSyncExternalStore(subscribeVisibility, visibilitySnapshot);
+      const resolved = available && current ? resolveQuotaProvider(current.provider, dirState.groups) : null;
+      const providerHidden = !!resolved && hidden[resolved] === false;
+      const provider = providerHidden ? null : resolved;
       React.useEffect(() => { if (provider) chipEnsure(query, refresh, provider, false); }, [provider, query, refresh]);
+      // Active conversation: re-read the quota on a fixed interval so a session
+      // that has been running for a while never keeps showing the balance it
+      // loaded with. Hidden tabs are skipped and caught up on the next
+      // visibility change, so a backgrounded window costs no Remote traffic.
+      React.useEffect(() => {
+        if (!provider) return undefined;
+        const tick = () => {
+          if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+          chipPoll(query, refresh, provider);
+        };
+        const timer = setInterval(tick, CHIP_POLL_MS);
+        const onVisibility = () => {
+          if (typeof document === "undefined" || document.visibilityState !== "hidden") tick();
+        };
+        if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+        return () => {
+          clearInterval(timer);
+          if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+        };
+      }, [provider, query, refresh]);
       const record = React.useSyncExternalStore(
         subscribeChipStore,
         () => (provider ? chipState[provider] || null : null)
@@ -548,14 +929,14 @@ window.__ModuleLoader__.load({
       }, [seat]);
 
       const visible = seat === "below" || dockPresent === false;
-      if (!visible || !available || !enabled) return null;
+      if (!visible || !available || providerHidden) return null;
 
       const name = provider ? t("provider" + provider.charAt(0).toUpperCase() + provider.slice(1)) : null;
       const value = record && record.value && record.value.status === "ok" ? record.value : null;
       const refreshing = !!record && record.status === "loading" && !!value;
 
       if (!value) {
-        if ((!provider && dirLoading) || (provider && (!record || record.status === "loading"))) {
+        if ((!resolved && dirLoading) || (provider && (!record || record.status === "loading"))) {
           return React.createElement(ChipSkeleton, { name });
         }
         return null; // unmapped model / failed query: stay out of the way
@@ -577,7 +958,12 @@ window.__ModuleLoader__.load({
           React.createElement("b", { style: styles.chipValue }, currencySymbol(b.currency) + b.totalBalance)
         );
       }
-      const windows = (value.windows || []).filter(Boolean);
+      let windows = (value.windows || []).filter(Boolean);
+      // Codex: the account-level aggregate is the useful one-line readout —
+      // per-model extra windows (e.g. GPT-5.3-Codex-Spark) clutter the chip,
+      // and its 5h window overlaps the 7d story. Keep only the 7d window in
+      // the chip; the settings page still shows every window.
+      if (provider === "codex") windows = windows.filter((w) => w.name === "7d");
       if (windows.length === 0) return null;
       return React.createElement("span", {
         className: chipClass,
@@ -590,7 +976,7 @@ window.__ModuleLoader__.load({
           const color = usageColor(used);
           return React.createElement("span", { key: "seg" + i, style: { ...styles.chipSeg, marginLeft: i === 0 ? 4 : 12 } },
             React.createElement("span", { style: styles.chipSegLabel }, windowLabel(w.name, t)),
-            React.createElement("span", { style: styles.chipMiniTrack },
+            React.createElement("span", { style: { ...styles.chipMiniTrack, borderColor: meterBorder(usageLevel(used)) } },
               React.createElement("span", { style: { ...styles.chipMiniFill, width: (used === null ? 0 : used) + "%", background: color } })
             ),
             React.createElement("b", { style: { ...styles.chipValue, color } }, used === null ? "—" : used + "%"),
@@ -602,6 +988,10 @@ window.__ModuleLoader__.load({
 
     function BalancesPanel(props) {
       const { query, refresh, t } = props;
+      // Which of the section's two levels is on screen.
+      const [view, setView] = React.useState("list");
+      // Keeps the relative "更新于 …" line counting while the panel is open.
+      const now = useNow(30000);
       const [cards, setCards] = React.useState(() => {
         const cached = loadCache();
         const providers = {};
@@ -647,56 +1037,111 @@ window.__ModuleLoader__.load({
           });
       }, [query, refresh]);
 
-      // 挂载走缓存（host 调度器保鲜）；刷新按钮强制现场查询。
+      // 全面板只发一次 Remote 请求：Host 的 query/refresh 本来就返回完整快照。
+      // 旧实现按 provider 连发四次 RPC，冷启动/手动刷新时会重复经过
+      // Typert + HTTP 边界，并让界面等待四个独立请求全部落定。
       const refreshAll = React.useCallback((force) => {
-        for (const name of PROVIDER_NAMES) refreshOne(name, force);
-      }, [refreshOne]);
+        setCards((s) => ({
+          ...s,
+          state: Object.fromEntries(PROVIDER_NAMES.map((name) => [name, "loading"])),
+          errors: {},
+        }));
+        Promise.resolve()
+          .then(() => (force ? refresh : query)(null))
+          .then((result) => {
+            if (!result || result.ok === false) {
+              throw new Error((result && result.error && result.error.message) || "remote failed");
+            }
+            if (!mounted.current) return;
+            const incoming = (result.value && result.value.providers) || {};
+            setCards((s) => {
+              const providers = { ...s.providers };
+              const state = { ...s.state };
+              for (const name of PROVIDER_NAMES) {
+                const prov = incoming[name];
+                if (prov && prov.status !== "skipped") providers[name] = prov;
+                state[name] = "done";
+              }
+              const fetchedAt = (result.value && result.value.fetchedAt) || s.fetchedAt;
+              saveCache({ fetchedAt, providers });
+              return { ...s, providers, fetchedAt, state, errors: {} };
+            });
+          })
+          .catch((e) => {
+            if (!mounted.current) return;
+            const message = String((e && e.message) || e);
+            setCards((s) => ({
+              ...s,
+              state: Object.fromEntries(PROVIDER_NAMES.map((name) => [name, "error"])),
+              errors: Object.fromEntries(PROVIDER_NAMES.map((name) => [name, message])),
+            }));
+          });
+      }, [query, refresh]);
 
       React.useEffect(() => { refreshAll(false); }, [refreshAll]);
 
       const refreshingAny = PROVIDER_NAMES.some((n) => cards.state[n] === "loading");
+      // Re-render both the switches and the list when a switch flips.
+      const hidden = React.useSyncExternalStore(subscribeVisibility, visibilitySnapshot);
+
+      const statusOf = (name) => {
+        if (cards.state[name] === "error") return "error";
+        const prov = cards.providers[name];
+        if (prov) return prov.status;
+        return cards.state[name] === "loading" ? "loading" : "skipped";
+      };
 
       const renderProvider = (name, headExtra, body, divider) => {
+        if (hidden[name] === false) return null; // the user's own switch
         const st = cards.state[name];
         const prov = cards.providers[name];
         const value = st === "error"
           ? { status: "error", error: cards.errors[name] || "unknown" }
           : prov || { status: st === "loading" ? "loading" : "skipped" };
+        if (HIDDEN_STATUSES.includes(value.status)) return null;
         const titleKey = "provider" + name.charAt(0).toUpperCase() + name.slice(1);
         return React.createElement(ProviderBlock, { key: name, name, title: t(titleKey), value, t, headExtra, divider }, body);
       };
 
-      const updated = fmtUpdatedAt(cards.fetchedAt, t);
-      const chipOn = React.useSyncExternalStore(subscribeChipEnabled, isChipEnabled);
+      const statuses = Object.fromEntries(PROVIDER_NAMES.map((name) => [name, statusOf(name)]));
+      const updated = fmtUpdatedAt(cards.fetchedAt, t, now);
+
+      // Two levels live inside this one settings section: the quotas, and the
+      // embedded page the header's gear opens.
+      if (view === "visibility") {
+        return React.createElement("div", { style: styles.wrap },
+          React.createElement(VisibilitySettings, {
+            t, hidden, statuses, values: cards.providers, onBack: () => setView("list"),
+          })
+        );
+      }
+
       return React.createElement("div", { style: styles.wrap },
         React.createElement("div", { style: styles.head },
           React.createElement("h2", { style: styles.title }, t("title")),
           React.createElement("div", { style: styles.headRight },
-            React.createElement("label", { style: { display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" } },
-              React.createElement("span", { style: { color: MUTED, fontSize: 12 } }, t("chipToggle")),
-              React.createElement("button", {
-                className: "dsh-ab-switch",
-                "data-on": chipOn ? "true" : "false",
-                role: "switch",
-                "aria-checked": chipOn ? "true" : "false",
-                "aria-label": t("chipToggle"),
-                onClick: () => setChipEnabled(!chipOn),
-              })
-            ),
             updated ? React.createElement("p", { style: styles.updated }, updated) : null,
             React.createElement("button", {
               className: "dsh-ab-refresh" + (refreshingAny ? " spinning" : ""),
               onClick: () => refreshAll(true),
               title: t("refresh"),
               "aria-label": t("refresh"),
-            }, React.createElement(RefreshIcon))
+            }, React.createElement(RefreshIcon)),
+            React.createElement("button", {
+              className: "dsh-ab-gear",
+              onClick: () => setView("visibility"),
+              title: t("settingsHint"),
+              "aria-label": t("settingsHint"),
+            }, React.createElement(GearIcon))
           )
         ),
         React.createElement("div", { style: styles.list },
           renderProvider("codex", null, React.createElement(SubscriptionBody, { value: cards.providers.codex || {}, t }), false),
           renderProvider("kimi", null, React.createElement(SubscriptionBody, { value: cards.providers.kimi || {}, t }), true),
+          renderProvider("glm", null, React.createElement(SubscriptionBody, { value: cards.providers.glm || {}, t }), true),
           renderProvider("opencodeGo", null, React.createElement(SubscriptionBody, { value: cards.providers.opencodeGo || {}, t }), true),
-          renderProvider("deepseek", React.createElement(BalanceHead, { value: cards.providers.deepseek || {}, t }), React.createElement(BalanceBody, { value: cards.providers.deepseek || {}, t }), true)
+          renderProvider("deepseek", React.createElement(BalanceHead, { value: cards.providers.deepseek || {}, t }), React.createElement(BalanceBody, { value: cards.providers.deepseek || {}, t }), true),
+          renderProvider("ai302", React.createElement(BalanceHead, { value: cards.providers.ai302 || {}, t }), React.createElement(BalanceBody, { value: cards.providers.ai302 || {}, t }), true)
         )
       );
     }
@@ -705,6 +1150,7 @@ window.__ModuleLoader__.load({
       const mountReady = ctx.remote.$mount(TYPERT_REMOTE);
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), "wuzhongyanqiu-dsh-plugins: dictionaries");
       ctx.effect(ensureStyleTag, "wuzhongyanqiu-dsh-plugins: styles");
+      ctx.effect(watchMikuSkin, "wuzhongyanqiu-dsh-plugins: miku skin flag");
       const t = ctx.locale.bind(NS);
 
       const callRemote = (method, filter) => {
@@ -732,7 +1178,11 @@ window.__ModuleLoader__.load({
       // Composer chip: register into every candidate seat; the component
       // renders only in the selected one. Runs in its own dependent fiber so
       // a missing model-selection service never blocks the settings page.
-      ctx.inject(["slots", "modelDirectories", "sessions"], (scope) => {
+      // `remote` + `remote.session` are required by the modelDirectories
+      // service: its directoryFor() reaches ctx.remote.session, and cordis
+      // enforces the consumer's own inject list. Without them directoryFor()
+      // throws and the chip would silently stay hidden.
+      ctx.inject(["slots", "modelDirectories", "sessions", "remote", "remote.session"], (scope) => {
         const models = scope.modelDirectories || scope.get("modelDirectories");
         const sessions = scope.sessions;
         for (const [posKey, seat, seatOrder] of CHIP_SEATS) {
@@ -771,6 +1221,10 @@ window.__ModuleLoader__.load({
     exports.NS = NS;
     exports.apply = apply;
     exports.inject = inject;
+    // Exposed for the standalone route-mapping test (.dev/test-provider-map.mjs).
+    exports.resolveQuotaProvider = resolveQuotaProvider;
     return module.exports;
+  }
+});
   }
 });

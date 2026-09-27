@@ -15,6 +15,10 @@
 //                  environment/DSH credential reference, falling back to the
 //                  Kimi Code CLI OAuth login state and refresh flow.
 //   - DeepSeek   : GET {deepseekBaseUrl}/user/balance with a Bearer key.
+//   - GLM Coding Plan (Z.AI / 智谱):
+//                  GET {glmBaseUrl}/api/monitor/usage/quota/limit with a Bearer
+//                  key; CREDIT_LIMIT / TOKENS_LIMIT rows carry the rolling 5h
+//                  and weekly windows, TIME_LIMIT the monthly MCP tool budget.
 //   - OpenCode Go: GET {opencodeBaseUrl} (https://opencode.ai/zen/go/v1/usage)
 //                  with a Bearer key; rolling / weekly / monthly windows.
 //
@@ -37,6 +41,10 @@ import path from "node:path";
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_OPENCODE_BASE_URL = "https://opencode.ai/zen/go/v1/usage";
+const DEFAULT_AI302_BASE_URL = "https://api.302.ai";
+// GLM Coding Plan: the CN subscription lives on bigmodel.cn, the international
+// one on api.z.ai. Only the ORIGIN matters — see glmQuotaUrl().
+const DEFAULT_GLM_BASE_URL = "https://open.bigmodel.cn";
 const DEFAULT_CODEX_CLI = "codex";
 const DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1";
 const DEFAULT_KIMI_OAUTH_HOST = "https://auth.kimi.com";
@@ -55,6 +63,12 @@ export const Config = z.object({
   deepseekApiKeyEnv: z.string().default("DEEPSEEK_API_KEY"),
   kimiApiKeyEnv: z.string().default("KIMI_API_KEY"),
   opencodeGoApiKeyEnv: z.string().default("OPENCODE_GO_API_KEY"),
+  ai302BaseUrl: z.string().default(DEFAULT_AI302_BASE_URL),
+  ai302ApiKeyEnv: z.string().default("AI_302_API_KEY"),
+  glmBaseUrl: z.string().default(DEFAULT_GLM_BASE_URL),
+  // The credential ref this deployment already uses for the CN coding plan;
+  // queryGlm falls back to the international / generic names when it is absent.
+  glmApiKeyEnv: z.string().default("ZAI_CODING_CN_API_KEY"),
   kimiBaseUrl: z.string().default(DEFAULT_KIMI_BASE_URL),
   kimiOauthHost: z.string().default(DEFAULT_KIMI_OAUTH_HOST),
   kimiClientId: z.string().default(DEFAULT_KIMI_CLIENT_ID),
@@ -108,12 +122,13 @@ export function findOnPath(command) {
 }
 
 /**
- * Resolve an API key: process environment first, then the DSH credentials
- * seam (same name). Returns undefined when neither source has it.
+ * Resolve an API key. The DSH credentials seam is the primary source (its
+ * own resolution covers env-inherited values, the managed credential store
+ * and dotenv fallbacks — the user-facing "configured in DSH" path); a bare
+ * `process.env` read is the last-resort fallback for standalone/non-DSH
+ * deployments. Returns undefined when no source has it.
  */
 async function resolveKey(ctx, envName) {
-  const fromEnv = process.env[envName];
-  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
   const credentials = ctx.get("credentials");
   if (credentials) {
     try {
@@ -122,6 +137,23 @@ async function resolveKey(ctx, envName) {
     } catch {
       /* ignore */
     }
+  }
+  const fromEnv = process.env[envName];
+  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+  return undefined;
+}
+
+/**
+ * Resolve the first key that any of `names` provides, in order. Used where one
+ * subscription is reachable under several credential names (GLM Coding Plan is
+ * configured as ZAI_CODING_CN_API_KEY here, but other deployments store the
+ * international or generic name).
+ */
+async function resolveKeyAny(ctx, names) {
+  for (const envName of names) {
+    if (typeof envName !== "string" || envName.length === 0) continue;
+    const key = await resolveKey(ctx, envName);
+    if (key) return key;
   }
   return undefined;
 }
@@ -422,6 +454,179 @@ async function queryDeepSeek(ctx, config, timeoutMs) {
     };
   } catch {
     return { status: "error", keyConfigured: true, error: "network", available: null, balances: [] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 302.AI provider: GET {base}/dashboard/balance
+// ---------------------------------------------------------------------------
+
+/**
+ * 302.AI — a plain balance provider like DeepSeek, but simpler: the endpoint
+ * answers { data: { balance: "50.00" } } with no currency field. 302.AI
+ * accounts bill in USD, so the entry carries currency: "USD" and the client
+ * renders it with a "$" prefix.
+ */
+async function query302AI(ctx, config, timeoutMs) {
+  const key = await resolveKey(ctx, config.ai302ApiKeyEnv);
+  if (!key) {
+    return {
+      status: "not-configured",
+      keyConfigured: false,
+      error: "no-api-key",
+      available: null,
+      balances: [],
+    };
+  }
+  try {
+    const r = await fetchJson(
+      `${String(config.ai302BaseUrl || DEFAULT_AI302_BASE_URL).replace(/\/+$/, "")}/dashboard/balance`,
+      { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" } },
+      timeoutMs,
+    );
+    if (r.status === 401) {
+      return { status: "error", keyConfigured: true, error: "unauthorized", available: null, balances: [] };
+    }
+    if (!r.ok) {
+      return { status: "error", keyConfigured: true, error: r.status ? `http-${r.status}` : "too-large", available: null, balances: [] };
+    }
+    const body = r.body || {};
+    const data = body && typeof body === "object" && body.data ? body.data : body;
+    const balance = balanceLabel(data && data.balance);
+    return {
+      status: "ok",
+      keyConfigured: true,
+      error: null,
+      available: typeof data.is_available === "boolean" ? data.is_available : null,
+      balances: balance === null
+        ? []
+        : [{
+            currency: "USD", // 302.AI bills in USD; client shows a $ prefix
+            totalBalance: balance,
+            grantedBalance: null,
+            toppedUpBalance: null,
+          }],
+    };
+  } catch {
+    return { status: "error", keyConfigured: true, error: "network", available: null, balances: [] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GLM Coding Plan (Z.AI / 智谱): GET {origin}/api/monitor/usage/quota/limit
+// ---------------------------------------------------------------------------
+
+/**
+ * The quota probe lives on the API origin, but a deployment configures the
+ * coding endpoint (`https://open.bigmodel.cn/api/coding/paas/v4`,
+ * `https://api.z.ai/api/coding/paas/v4`, …). Collapse any of those to the
+ * origin so either form works.
+ */
+export function glmQuotaUrl(baseUrl) {
+  const raw = String(baseUrl || DEFAULT_GLM_BASE_URL).trim();
+  try {
+    const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return `${url.origin}/api/monitor/usage/quota/limit`;
+  } catch {
+    return `${DEFAULT_GLM_BASE_URL}/api/monitor/usage/quota/limit`;
+  }
+}
+
+/** nextResetTime is unix MILLISECONDS (unlike Codex's seconds). */
+function toIsoFromMs(value) {
+  const ms = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/** Row-level consumed share: `percentage`, else currentValue/usage. */
+function glmUsedPercent(row) {
+  const pct = typeof row.percentage === "number" ? row.percentage : Number(row.percentage);
+  if (Number.isFinite(pct)) return Math.max(0, Math.min(100, pct));
+  const used = Number(row.currentValue);
+  const total = Number(row.usage);
+  if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
+    return Math.max(0, Math.min(100, (used / total) * 100));
+  }
+  return null;
+}
+
+/**
+ * Adapt `data.limits[]`. Token rows carry their window length as unit/number:
+ * unit 3 is hours (5 → the rolling five-hour window), unit 6 is weeks (1 → the
+ * weekly window). TIME_LIMIT rows are the monthly MCP tool budget (Web Search /
+ * Web Reader / Zread) and only exist on the v2 coding-plan protocol.
+ */
+export function adaptGlmQuota(body) {
+  const data =
+    body && typeof body === "object" && body.data && typeof body.data === "object" ? body.data : body;
+  const limits = Array.isArray(data && data.limits) ? data.limits : [];
+  const windows = [];
+  for (const row of limits) {
+    if (!row || typeof row !== "object") continue;
+    const used = glmUsedPercent(row);
+    if (used === null) continue;
+    const unit = Number(row.unit);
+    const number = Number(row.number);
+    let name = null;
+    if (row.type === "TOKENS_LIMIT" || row.type === "CREDIT_LIMIT") {
+      if (unit === 3 && Number.isFinite(number)) name = number === 5 ? "5h" : `${number}h`;
+      else if (unit === 6 && Number.isFinite(number)) name = number === 1 ? "weekly" : `${number}w`;
+    } else if (row.type === "TIME_LIMIT") {
+      name = "monthly";
+    }
+    if (!name) continue;
+    windows.push({
+      name,
+      usedPercent: Math.round(used),
+      resetsAt: toIsoFromMs(row.nextResetTime),
+      limitWindowSeconds: unit === 3 && Number.isFinite(number) ? number * 3600 : null,
+    });
+  }
+  return { plan: safeLabel(glmPlanName(data && data.level)), windows };
+}
+
+/** `data.level` is the plan tier: lite / pro / max (…-plan suffixes vary). */
+function glmPlanName(level) {
+  if (typeof level !== "string" || level.length === 0) return null;
+  const cleaned = level.trim();
+  if (cleaned.length === 0) return null;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+async function queryGlm(ctx, config, timeoutMs) {
+  const key = await resolveKeyAny(ctx, [
+    config.glmApiKeyEnv,
+    "ZAI_CODING_CN_API_KEY",
+    "ZAI_CODING_API_KEY",
+    "GLM_CODING_API_KEY",
+  ]);
+  if (!key) {
+    return { status: "not-configured", keyConfigured: false, error: "no-api-key", plan: null, windows: [] };
+  }
+  try {
+    const r = await fetchJson(
+      glmQuotaUrl(config.glmBaseUrl),
+      { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" } },
+      timeoutMs,
+    );
+    if (r.status === 401 || r.status === 403) {
+      return { status: "error", keyConfigured: true, error: "unauthorized", plan: null, windows: [] };
+    }
+    if (!r.ok) {
+      return { status: "error", keyConfigured: true, error: r.status ? `http-${r.status}` : "too-large", plan: null, windows: [] };
+    }
+    const body = r.body || {};
+    // The endpoint answers HTTP 200 with { code, msg, success }; a rejected key
+    // or a non-coding-plan account reports it in the envelope, not the status.
+    if (body.success === false || (typeof body.code === "number" && body.code !== 200)) {
+      const code = typeof body.code === "number" ? body.code : "?";
+      return { status: "error", keyConfigured: true, error: `api-${code}`, plan: null, windows: [] };
+    }
+    return { status: "ok", keyConfigured: true, error: null, ...adaptGlmQuota(body) };
+  } catch {
+    return { status: "error", keyConfigured: true, error: "network", plan: null, windows: [] };
   }
 }
 
@@ -803,7 +1008,9 @@ function toBalanceInfos(rawBalances) {
     const total = typeof b.totalBalance === "string" ? b.totalBalance : null;
     const num = total === null ? NaN : Number(total);
     return {
-      currency: typeof b.currency === "string" ? b.currency : "?",
+      // null = unknown currency (302.AI returns none); the client shows the
+      // number bare instead of a "?" placeholder.
+      currency: typeof b.currency === "string" ? b.currency : null,
       totalBalance: total,
       grantedBalance: typeof b.grantedBalance === "string" ? b.grantedBalance : null,
       toppedUpBalance: typeof b.toppedUpBalance === "string" ? b.toppedUpBalance : null,
@@ -837,13 +1044,18 @@ export function summarizeResult(result) {
     }
     const parts = (prov.balances || []).map(
       (b) =>
-        `${b.currency} ${b.totalBalance ?? "?"}（充值 ${b.toppedUpBalance ?? "?"} / 赠金 ${b.grantedBalance ?? "?"}）`,
+        `${b.currency ? b.currency + " " : ""}${b.totalBalance ?? "?"}` +
+        (b.grantedBalance == null && b.toppedUpBalance == null
+          ? ""
+          : `（充值 ${b.toppedUpBalance ?? "?"} / 赠金 ${b.grantedBalance ?? "?"}）`),
     );
     lines.push(`${label}: ${parts.join("；") || "无余额数据"}`);
   };
   sub("Codex", p.codex);
   sub("Kimi", p.kimi);
+  sub("GLM Coding Plan", p.glm);
   bal("DeepSeek", p.deepseek);
+  bal("302.AI", p.ai302);
   sub("OpenCode Go", p.opencodeGo);
   return lines.join("\n");
 }
@@ -853,8 +1065,10 @@ export function summarizeResult(result) {
 const PROVIDER_DEFAULTS = {
   codex: { kind: "subscription", status: "skipped", error: null, plan: null, windows: [] },
   kimi: { kind: "subscription", status: "skipped", keyConfigured: false, error: null, plan: null, windows: [] },
+  glm: { kind: "subscription", status: "skipped", keyConfigured: false, error: null, plan: null, windows: [] },
   deepseek: { kind: "balance", status: "skipped", keyConfigured: false, error: null, available: null, balances: [] },
-  opencodeGo: { kind: "subscription", status: "skipped", keyConfigured: false, error: null, windows: [] },
+  ai302: { kind: "balance", status: "skipped", keyConfigured: false, error: null, available: null, balances: [] },
+  opencodeGo: { kind: "subscription", status: "skipped", keyConfigured: false, error: null, plan: null, windows: [] },
 };
 
 export class AiQuotaGateway extends TypertRemoteService {
@@ -873,8 +1087,18 @@ export class AiQuotaGateway extends TypertRemoteService {
         const tick = () => this._refresh().catch(() => {});
         const timer = setInterval(tick, intervalMs);
         timer.unref?.();
-        tick(); // 启动即预热一次
-        return () => clearInterval(timer);
+        // 启动预热必须等 credentials 服务就绪。resolveKey() 会把「服务还没加载」
+        // 读成「没有 key」，于是 deepseek / 302.AI / GLM 会在重启后的第一个
+        // refreshIntervalMs 里一直显示「未配置 API Key」——错的是快照，不是配置。
+        // ctx.inject 在服务可用时触发（已就绪则立即触发）；没有 credentials 的
+        // 独立部署由第一个定时 tick 和 query() 的按需刷新兜底。
+        const fiber = ctx.inject(["credentials"], () => {
+          tick();
+        });
+        return () => {
+          clearInterval(timer);
+          fiber?.dispose?.();
+        };
       });
     }
 
@@ -884,12 +1108,12 @@ export class AiQuotaGateway extends TypertRemoteService {
       defineTool({
         name: "query_ai_quota",
         description:
-          "Query the user's AI subscription balances and usage. Codex (rate-limit windows from the local codex CLI app-server), Kimi Code (quota windows via the CLI's OAuth login state), DeepSeek API balance, and OpenCode Go plan usage. Returns per-provider status, usage percentages, reset times, and balances. Never returns API keys. Providers with no key or missing CLI report a clear status instead of failing the whole query.",
+          "Query the user's AI subscription balances and usage. Codex (rate-limit windows from the local codex CLI app-server), Kimi Code (quota windows via the CLI's OAuth login state), GLM Coding Plan from Z.AI / 智谱 (5-hour token cycle, weekly quota, monthly MCP budget), DeepSeek API balance, 302.AI balance, and OpenCode Go plan usage. Returns per-provider status, usage percentages, reset times, and balances. Never returns API keys. Providers with no key or missing CLI report a clear status instead of failing the whole query.",
         parameters: {
           providers: {
             type: "array",
-            items: { type: "string", enum: ["codex", "kimi", "deepseek", "opencodeGo"] },
-            description: "Optional: only query these providers. Defaults to all four.",
+            items: { type: "string", enum: ["codex", "kimi", "glm", "deepseek", "ai302", "opencodeGo"] },
+            description: "Optional: only query these providers. Defaults to all six.",
           },
         },
         output: {
@@ -952,7 +1176,7 @@ export class AiQuotaGateway extends TypertRemoteService {
 
   async _queryAll(filter) {
     const timeoutMs = this.config.timeoutMs || DEFAULT_TIMEOUT_MS;
-    const ALL = ["codex", "kimi", "deepseek", "opencodeGo"];
+    const ALL = ["codex", "kimi", "glm", "deepseek", "ai302", "opencodeGo"];
     const want = Array.isArray(filter)
       ? ALL.filter((name) => filter.includes(name))
       : ALL;
@@ -960,7 +1184,9 @@ export class AiQuotaGateway extends TypertRemoteService {
     for (const name of want) {
       if (name === "codex") tasks.push(["codex", codexRateLimits(this.config.codexCli || DEFAULT_CODEX_CLI, timeoutMs)]);
       else if (name === "kimi") tasks.push(["kimi", queryKimi(this.ctx, this.config, timeoutMs)]);
+      else if (name === "glm") tasks.push(["glm", queryGlm(this.ctx, this.config, timeoutMs)]);
       else if (name === "deepseek") tasks.push(["deepseek", queryDeepSeek(this.ctx, this.config, timeoutMs)]);
+      else if (name === "ai302") tasks.push(["ai302", query302AI(this.ctx, this.config, timeoutMs)]);
       else tasks.push(["opencodeGo", queryOpencodeGo(this.ctx, this.config, timeoutMs)]);
     }
 
@@ -976,10 +1202,14 @@ export class AiQuotaGateway extends TypertRemoteService {
         providers.codex = { ...base, status: c.status, error: c.error, plan: c.plan, windows: toSubscriptionWindows(c.windows) };
       } else if (name === "kimi") {
         providers.kimi = { ...base, status: raw.status, keyConfigured: raw.keyConfigured ?? false, error: raw.error, plan: raw.plan ?? null, windows: toSubscriptionWindows(raw.windows) };
+      } else if (name === "glm") {
+        providers.glm = { ...base, status: raw.status, keyConfigured: raw.keyConfigured ?? false, error: raw.error, plan: raw.plan ?? null, windows: toSubscriptionWindows(raw.windows) };
       } else if (name === "deepseek") {
         providers.deepseek = { ...base, status: raw.status, keyConfigured: raw.keyConfigured ?? false, error: raw.error, available: raw.available ?? null, balances: toBalanceInfos(raw.balances) };
+      } else if (name === "ai302") {
+        providers.ai302 = { ...base, status: raw.status, keyConfigured: raw.keyConfigured ?? false, error: raw.error, available: raw.available ?? null, balances: toBalanceInfos(raw.balances) };
       } else {
-        providers.opencodeGo = { ...base, status: raw.status, keyConfigured: raw.keyConfigured ?? false, error: raw.error, windows: toSubscriptionWindows(raw.windows) };
+        providers.opencodeGo = { ...base, status: raw.status, keyConfigured: raw.keyConfigured ?? false, error: raw.error, plan: raw.plan ?? null, windows: toSubscriptionWindows(raw.windows) };
       }
     });
     // 未请求的 provider 以默认形状（status: "skipped"）填充。
